@@ -1,6 +1,7 @@
 from .analytics import CycleAnalytics
 from .audit import IntegrityAudit
 from .batch import BatchReceiver
+from .calibration import CalibrationRules
 from .contracts import DomainError
 from .design import DesignRules
 from .diagnostics import OperationsView
@@ -63,6 +64,33 @@ class CycleService:
     def get_test(self, test_id):
         with self.store.read() as db:
             return MeasurementRules(db).trace(test_id)
+
+    def get_device(self, device_id):
+        with self.store.read() as db:
+            return CalibrationRules(db).get_device(device_id)
+
+    def review_queue(self, product=None):
+        """Conclusions currently parked for recheck plus the rework jobs whose
+        premise rests on an unverified conclusion."""
+        with self.store.read() as db:
+            sql = ("SELECT j.job_id,j.status,j.failure_reason,d.product,t.test_id,t.tested_at,"
+                   "t.verify_reason,t.device_id FROM jobs j JOIN designs d ON d.design_id=j.design_id"
+                   " JOIN tests t ON t.job_id=j.job_id AND t.superseded=0 AND t.verified=0")
+            args = ()
+            if product is not None:
+                sql += " WHERE d.product=?"
+                args = (product,)
+            reviews = [dict(row) for row in db.execute(sql + " ORDER BY t.tested_at,j.job_id", args)]
+            impact_sql = ("SELECT c.job_id,c.parent_job FROM jobs c JOIN jobs p ON p.job_id=c.parent_job"
+                          " WHERE p.status='recheck'")
+            impact_args = ()
+            if product is not None:
+                impact_sql += " AND p.design_id IN (SELECT design_id FROM designs WHERE product=?)"
+                impact_args = (product,)
+            impacted = [dict(row) for row in db.execute(
+                impact_sql + " ORDER BY c.job_id", impact_args)]
+            return {"recheck": reviews, "rework_impacted": impacted,
+                    "recheck_count": len(reviews), "rework_impacted_count": len(impacted)}
 
     def get_event(self, event_id):
         return self.ledger.get(event_id)

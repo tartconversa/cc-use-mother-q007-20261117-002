@@ -16,7 +16,7 @@ class BatchApiTests(ServiceCase):
         self.assertEqual(second["next_line"], 5)
         final = self.service.ingest_batch("b1", events)
         self.assertTrue(final["completed"])
-        self.assertEqual(final["next_line"], 12)
+        self.assertEqual(final["next_line"], 14)
         self.assertEqual(self.service.batches.status("b1")["state"], "completed")
 
     def test_batch_conflict_does_not_advance_cursor(self):
@@ -78,15 +78,16 @@ class BatchApiTests(ServiceCase):
         client = TestClient(create_app(str(self.path)))
         for item in scenario():
             client.post("/events", json=item)
-        trace = client.get("/events/12/lineage")
+        trace = client.get("/events/14/lineage")
         self.assertEqual(trace.status_code, 200)
         self.assertEqual(trace.json()["trace"]["plan"]["revision"], 1)
+        self.assertEqual(trace.json()["trace"]["device"]["device_id"], "D1")
         self.assertEqual(len(trace.json()["trace"]["reservations"]), 2)
 
     def test_http_quality_block_and_stale_preview(self):
         client = TestClient(create_app(str(self.path)))
         events = scenario()
-        for item in events[:5]:
+        for item in events[:7]:
             self.assertEqual(client.post("/events", json=item).status_code, 200)
         preview = client.get("/reports/robot-arm", params={"window_start": START, "window_end": END}).json()
         blocked = client.post("/releases", json={"release_id": "jan", "product": "robot-arm",
@@ -94,7 +95,7 @@ class BatchApiTests(ServiceCase):
                                                  "expected_fingerprint": preview["fingerprint"]})
         self.assertEqual(blocked.status_code, 409)
         self.assertEqual(blocked.json()["error"], "quality_block")
-        for item in events[5:]:
+        for item in events[7:]:
             self.assertEqual(client.post("/events", json=item).status_code, 200)
         stale = client.post("/releases", json={"release_id": "jan", "product": "robot-arm",
                                                "window_start": START, "window_end": END,

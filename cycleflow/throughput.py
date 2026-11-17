@@ -15,7 +15,7 @@ class ThroughputView:
         weeks = defaultdict(lambda: {"opened_jobs": 0, "opened_units": 0,
                                      "finished_jobs": 0, "tested_units": 0,
                                      "passed_units": 0, "failed_units": 0,
-                                     "rework_jobs": 0, "job_ids": []})
+                                     "unverified_units": 0, "rework_jobs": 0, "job_ids": []})
         for job in report["jobs"]:
             opened_week = datetime.fromisoformat(job["opened_at"]).strftime("%G-W%V")
             opened = weeks[opened_week]
@@ -29,7 +29,13 @@ class ThroughputView:
             for test in job["tests"]:
                 tested_week = datetime.fromisoformat(test["tested_at"]).strftime("%G-W%V")
                 group = weeks[tested_week]
-                group["tested_units"] += test["passed"] + test["failed"]
+                units = test["passed"] + test["failed"]
+                if test["superseded"]:
+                    continue
+                if not test["verified"]:
+                    group["unverified_units"] += units
+                    continue
+                group["tested_units"] += units
                 group["passed_units"] += test["passed"]
                 group["failed_units"] += test["failed"]
         result = []
@@ -74,7 +80,8 @@ class ThroughputView:
     def cohorts(self, product, start, end):
         report = self.analytics.report(product, start, end)
         groups = defaultdict(lambda: {"job_ids": [], "units": 0, "tested": 0,
-                                      "passed": 0, "failed": 0, "mean_cycle_inputs": []})
+                                      "passed": 0, "failed": 0, "unverified": 0,
+                                      "mean_cycle_inputs": []})
         for job in report["jobs"]:
             key = (job["revision"], bool(job["parent_job"]))
             group = groups[key]
@@ -83,7 +90,13 @@ class ThroughputView:
             if job["cycle_seconds"] is not None:
                 group["mean_cycle_inputs"].append(job["cycle_seconds"])
             for test in job["tests"]:
-                group["tested"] += test["passed"] + test["failed"]
+                if test["superseded"]:
+                    continue
+                units = test["passed"] + test["failed"]
+                if not test["verified"]:
+                    group["unverified"] += units
+                    continue
+                group["tested"] += units
                 group["passed"] += test["passed"]
                 group["failed"] += test["failed"]
         cohorts = []

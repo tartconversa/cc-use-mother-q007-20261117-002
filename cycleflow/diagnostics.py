@@ -51,10 +51,16 @@ class OperationsView:
                 if stage["completed_at"]:
                     milestones.append({"at": stage["completed_at"], "kind": "stage_finish",
                                        "stage": stage["stage"]})
-            for test in db.execute("SELECT test_id,tested_at,passed,failed,event_id FROM tests WHERE job_id=?", (job_id,)):
+            for test in db.execute(
+                    "SELECT test_id,tested_at,passed,failed,event_id,device_id,verified,superseded,verify_reason"
+                    " FROM tests WHERE job_id=? ORDER BY tested_at,test_id", (job_id,)):
                 milestones.append({"at": test["tested_at"], "kind": "tested", "stage": None,
                                    "test_id": test["test_id"], "passed": test["passed"],
-                                   "failed": test["failed"], "source_event_id": test["event_id"]})
+                                   "failed": test["failed"], "device_id": test["device_id"],
+                                   "verified": bool(test["verified"]),
+                                   "superseded": bool(test["superseded"]),
+                                   "verify_reason": test["verify_reason"],
+                                   "source_event_id": test["event_id"]})
             if job["status"] == "scrapped":
                 milestones.append({"at": job["completed_at"], "kind": "scrapped", "stage": None})
             milestones.sort(key=lambda item: (item["at"], item["kind"]))
@@ -71,7 +77,7 @@ class OperationsView:
     def supplier_exposure(self, product, start, end):
         report = self.analytics.report(product, start, end)
         exposure = defaultdict(lambda: {"jobs": set(), "units": 0, "passed": 0,
-                                        "failed": 0, "lots": set(), "revisions": set()})
+                                        "failed": 0, "unverified": 0, "lots": set(), "revisions": set()})
         for job in report["jobs"]:
             suppliers = set()
             for lot in job["lots"]:
@@ -83,6 +89,11 @@ class OperationsView:
                 suppliers.add(lot["supplier"])
             for supplier in suppliers:
                 for test in job["tests"]:
+                    if test["superseded"]:
+                        continue
+                    if not test["verified"]:
+                        exposure[supplier]["unverified"] += test["passed"] + test["failed"]
+                        continue
                     exposure[supplier]["passed"] += test["passed"]
                     exposure[supplier]["failed"] += test["failed"]
         result = []
@@ -91,7 +102,8 @@ class OperationsView:
                            "reserved_part_units": group["units"], "lots": sorted(group["lots"]),
                            "revisions": sorted(group["revisions"]),
                            "associated_passed_units": group["passed"],
-                           "associated_failed_units": group["failed"]})
+                           "associated_failed_units": group["failed"],
+                           "associated_unverified_units": group["unverified"]})
         return {"product": report["product"], "window_start": report["window_start"],
                 "window_end": report["window_end"], "suppliers": result,
                 "note": "Associated test units are attribution links, not additive across suppliers"}

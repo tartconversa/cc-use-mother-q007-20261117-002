@@ -64,4 +64,48 @@ class ReportShelf:
         return {"release_id": release_id, "frozen_fingerprint": frozen["fingerprint"],
                 "current_fingerprint": current["fingerprint"],
                 "current_differs": current["fingerprint"] != frozen["fingerprint"],
-                "frozen_source_head": frozen["source_head"], "current_source_head": current["source_head"]}
+                "frozen_source_head": frozen["source_head"], "current_source_head": current["source_head"],
+                "change_reasons": self._change_reasons(report, current)}
+
+    def _change_reasons(self, frozen, current):
+        """Explain how the current view diverges from the frozen release.
+
+        Historical releases are never rewritten; this makes the drift
+        attributable to later calibration, invalidation or replacement tests.
+        """
+        reasons = []
+        frozen_jobs = {job["job_id"]: job for job in frozen["jobs"]}
+        current_jobs = {job["job_id"]: job for job in current["jobs"]}
+        for job_id in sorted(set(frozen_jobs) | set(current_jobs)):
+            before = frozen_jobs.get(job_id)
+            after = current_jobs.get(job_id)
+            if before is None:
+                reasons.append({"code": "job_added", "subject": job_id})
+                continue
+            if after is None:
+                reasons.append({"code": "job_removed", "subject": job_id})
+                continue
+            if before["status"] != after["status"]:
+                reasons.append({"code": "job_status_changed", "subject": job_id,
+                                "from_status": before["status"], "to_status": after["status"]})
+            before_tests = {test["test_id"]: test for test in before["tests"]}
+            after_tests = {test["test_id"]: test for test in after["tests"]}
+            for test_id in sorted(set(after_tests) - set(before_tests)):
+                reasons.append({"code": "test_added", "subject": test_id, "job_id": job_id})
+            for test_id, test in after_tests.items():
+                old = before_tests.get(test_id)
+                if old is not None and old.get("verified", True) != test.get("verified", True):
+                    reasons.append({"code": "test_verification_changed", "subject": test_id,
+                                    "job_id": job_id, "verified": test["verified"],
+                                    "reason": test.get("verify_reason")})
+                if old is not None and old.get("superseded", False) != test.get("superseded", False):
+                    reasons.append({"code": "test_superseded", "subject": test_id, "job_id": job_id})
+        fields = ("tested_units", "passed_units", "failed_units", "unverified_units",
+                  "superseded_units", "rework_impacted_jobs", "recheck_jobs")
+        for field in fields:
+            old_value = frozen["summary"].get(field, 0)
+            new_value = current["summary"].get(field, 0)
+            if old_value != new_value:
+                reasons.append({"code": "summary_changed", "subject": field,
+                                "from_value": old_value, "to_value": new_value})
+        return reasons

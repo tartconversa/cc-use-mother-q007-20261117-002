@@ -22,6 +22,7 @@ class IntegrityAudit:
             findings.extend(self._lot_checks(db))
             findings.extend(self._job_checks(db, product))
             findings.extend(self._test_checks(db, product))
+            findings.extend(self._calibration_checks(db))
             findings.extend(self._release_checks(db, product))
             findings.sort(key=lambda item: (item["code"], item["subject"]))
             return {"product": product, "checked_event_head": db.execute(
@@ -106,8 +107,23 @@ class IntegrityAudit:
                 findings.append(self._issue("premature_test_state", job_id))
             if job["parent_job"]:
                 parent = db.execute("SELECT status FROM jobs WHERE job_id=?", (job["parent_job"],)).fetchone()
-                if parent is None or parent["status"] not in ("failed", "scrapped"):
+                if parent is None:
                     findings.append(self._issue("invalid_rework_parent", job_id))
+                elif parent["status"] not in ("failed", "scrapped", "recheck"):
+                    # A parent that recovered to completed via a verified redo
+                    # legitimately carried a failed conclusion when the rework
+                    # was opened; a completed parent without a redo does not.
+                    redone = db.execute(
+                        "SELECT COUNT(*) FROM tests WHERE job_id=? AND superseded=1",
+                        (job["parent_job"],)).fetchone()[0]
+                    if not redone:
+                        findings.append(self._issue("invalid_rework_parent", job_id))
+                if parent is not None and parent["status"] == "recheck":
+                    verified_effective = db.execute(
+                        "SELECT COUNT(*) FROM tests WHERE job_id=? AND superseded=0 AND verified=1",
+                        (job["parent_job"],)).fetchone()[0]
+                    if verified_effective:
+                        findings.append(self._issue("rework_premise_verified", job_id))
             if job["status"] != "scrapped":
                 assigned = {row["part"]: row["quantity"] for row in db.execute(
                     "SELECT l.part,SUM(r.quantity) quantity FROM reservations r JOIN lots l ON l.lot_id=r.lot_id WHERE r.job_id=? GROUP BY l.part",
@@ -130,8 +146,50 @@ class IntegrityAudit:
             plan = db.execute("SELECT * FROM plans WHERE plan_id=?", (test["plan_id"],)).fetchone()
             if plan is None or (plan["product"], plan["revision"]) != (test["product"], test["revision"]):
                 findings.append(self._issue("test_plan_revision", subject))
-            if test["status"] not in ("completed", "failed"):
+            if test["status"] not in ("completed", "failed", "recheck"):
                 findings.append(self._issue("test_job_status", subject))
+            device = db.execute("SELECT * FROM equipment WHERE device_id=?",
+                                (test["device_id"],)).fetchone()
+            if device is None:
+                findings.append(self._issue("test_unknown_device", subject))
+                continue
+            covered = db.execute(
+                "SELECT COUNT(*) FROM calibrations WHERE device_id=? AND state='active'"
+                " AND valid_from<=? AND valid_to>?",
+                (test["device_id"], test["tested_at"], test["tested_at"])).fetchone()[0]
+            if bool(test["verified"]) != bool(covered):
+                findings.append(self._issue("test_verification_stale", subject))
+            if not test["verified"] and not test["verify_reason"]:
+                findings.append(self._issue("unexplained_unverified", subject))
+        for job_id, in db.execute("SELECT DISTINCT job_id FROM tests"):
+            effective = db.execute(
+                "SELECT COUNT(*) FROM tests WHERE job_id=? AND superseded=0", (job_id,)).fetchone()[0]
+            if effective == 0:
+                findings.append(self._issue("effective_test_count", job_id))
+                continue
+            if effective != 1:
+                findings.append(self._issue("effective_test_count", job_id))
+            status = db.execute("SELECT status FROM jobs WHERE job_id=?", (job_id,)).fetchone()[0]
+            if status == "recheck":
+                parked = db.execute(
+                    "SELECT COUNT(*) FROM tests WHERE job_id=? AND superseded=0 AND verified=0",
+                    (job_id,)).fetchone()[0]
+                if not parked:
+                    findings.append(self._issue("recheck_without_unverified", job_id))
+        return findings
+
+    def _calibration_checks(self, db):
+        findings = []
+        for device in db.execute("SELECT * FROM equipment ORDER BY device_id"):
+            for calibration in db.execute(
+                    "SELECT * FROM calibrations WHERE device_id=? ORDER BY valid_from,calibration_id",
+                    (device["device_id"],)):
+                if calibration["valid_to"] <= calibration["valid_from"]:
+                    findings.append(self._issue("calibration_interval", calibration["calibration_id"]))
+                if calibration["recorded_at"] < device["registered_at"]:
+                    findings.append(self._issue("calibration_before_registration", calibration["calibration_id"]))
+                if calibration["state"] not in ("active", "invalidated"):
+                    findings.append(self._issue("calibration_state", calibration["calibration_id"]))
         return findings
 
     def _release_checks(self, db, product):

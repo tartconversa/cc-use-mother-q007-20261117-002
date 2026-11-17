@@ -27,8 +27,16 @@ class ExecutionRules:
         if parent_id is not None:
             parent_id = required_text(parent_id, "parent_job")
             parent = self.get(parent_id)
-            if parent["status"] not in {"failed", "scrapped"}:
-                raise DomainError("invalid_rework", "parent job must have failed or been scrapped")
+            if parent["status"] not in {"failed", "scrapped", "recheck"}:
+                raise DomainError("invalid_rework", "parent job must have failed, been scrapped or be under recheck")
+            if parent["status"] == "recheck":
+                # Rework after an invalidated calibration is allowed only while
+                # the conclusion behind it is genuinely unverified.
+                effective = self.db.execute(
+                    "SELECT COUNT(*) FROM tests WHERE job_id=? AND superseded=0 AND verified=1",
+                    (parent_id,)).fetchone()[0]
+                if effective:
+                    raise DomainError("invalid_rework", "verified parent job does not qualify for rework")
             if parent["design"]["product"] != design["product"]:
                 raise DomainError("invalid_rework", "rework must stay in same product")
             if occurred_at < parent["opened_at"]:

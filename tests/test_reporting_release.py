@@ -103,4 +103,4 @@ class ReportingReleaseTests(ServiceCase):
         audit = self.service.audit("robot-arm")
         self.assertTrue(audit["ok"])
         self.assertEqual(audit["finding_count"], 0)
-        self.assertEqual(audit["checked_event_head"], 12)
+        self.assertEqual(audit["checked_event_head"], 14)

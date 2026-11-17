@@ -107,9 +107,10 @@ class EventFlowTests(ServiceCase):
 
     def test_event_lineage_includes_job_and_lots(self):
         report = self.full_scenario()
-        trace = self.service.get_lineage(12)
+        trace = self.service.get_lineage(14)
         self.assertEqual(trace["kind"], "test.record")
         self.assertEqual(trace["trace"]["plan"]["plan_id"], "P1")
+        self.assertEqual(trace["trace"]["device"]["device_id"], "D1")
         self.assertEqual(trace["trace"]["job_lineage"][0]["job_id"], "J1")
         self.assertEqual({r["lot_id"] for r in trace["trace"]["reservations"]}, {"M1", "S1"})
-        self.assertIn(12, report["source_event_ids"])
+        self.assertIn(14, report["source_event_ids"])

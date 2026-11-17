@@ -40,8 +40,7 @@ class JobMeasurementTests(ServiceCase):
         self.seed_lots()
         self.seed_plan()
         self.seed_job()
-        outcome = self.ingest(20, "test.record", 15, {"test_id": "T1", "job_id": "J1",
-                                                       "plan_id": "P1", "passed": 4, "failed": 0})
+        outcome = self.ingest(20, "test.record", 15, self.build_test_payload("T1", 4, 0))
         self.assertEqual(outcome["error_code"], "job_not_testable")
         self.assertEqual(self.service.get_job("J1")["status"], "open")
 
@@ -49,10 +48,10 @@ class JobMeasurementTests(ServiceCase):
         self.seed_design()
         self.seed_lots()
         self.seed_plan()
+        self.seed_device()
         self.seed_job()
         self.complete_stages()
-        outcome = self.ingest(20, "test.record", 30, {"test_id": "T1", "job_id": "J1",
-                                                       "plan_id": "P1", "passed": 1, "failed": 1})
+        outcome = self.ingest(20, "test.record", 30, self.build_test_payload("T1", 1, 1))
         self.assertEqual(outcome["error_code"], "sample_mismatch")
         self.assertEqual(self.service.get_job("J1")["status"], "awaiting_test")
 
@@ -60,10 +59,10 @@ class JobMeasurementTests(ServiceCase):
         self.seed_design()
         self.seed_lots()
         self.seed_plan()
+        self.seed_device()
         self.seed_job()
         self.complete_stages()
-        failed = self.ingest(20, "test.record", 30, {"test_id": "T1", "job_id": "J1",
-                                                       "plan_id": "P1", "passed": 2, "failed": 2})
+        failed = self.ingest(20, "test.record", 30, self.build_test_payload("T1", 2, 2))
         self.assertEqual(failed["state"], "accepted")
         self.assertEqual(self.service.get_job("J1")["status"], "failed")
         child = self.seed_job("J2", quantity=2, number=21, minute=31, parent="J1")

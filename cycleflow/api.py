@@ -69,6 +69,10 @@ def create_app(db_path=None):
     def problems():
         return {"problems": service.problems()}
 
+    @app.get("/quality/reviews")
+    def reviews(product: str | None = None):
+        return service.review_queue(product)
+
     @app.get("/quality/audit")
     def audit(product: str | None = None):
         return service.audit(product)
@@ -108,6 +112,10 @@ def create_app(db_path=None):
     @app.get("/tests/{test_id}")
     def test(test_id: str):
         return service.get_test(test_id)
+
+    @app.get("/equipment/{device_id}")
+    def equipment(device_id: str):
+        return service.get_device(device_id)
 
     @app.get("/reports/{product}")
     def report(product: str, window_start: str, window_end: str):

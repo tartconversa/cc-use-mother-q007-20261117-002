@@ -20,8 +20,12 @@ def parser():
     retry.add_argument("event_id", type=int)
     sub.add_parser("retry-waiting")
     sub.add_parser("problems")
+    review = sub.add_parser("reviews")
+    review.add_argument("--product")
     audit = sub.add_parser("audit")
     audit.add_argument("--product")
+    device = sub.add_parser("device")
+    device.add_argument("device_id")
     capacity = sub.add_parser("capacity")
     capacity.add_argument("design_id")
     capacity.add_argument("quantity", type=int)
@@ -59,6 +63,10 @@ def main(argv=None):
             result = service.retry_waiting()
         elif args.command == "problems":
             result = service.problems()
+        elif args.command == "reviews":
+            result = service.review_queue(args.product)
+        elif args.command == "device":
+            result = service.get_device(args.device_id)
         elif args.command == "audit":
             result = service.audit(args.product)
         elif args.command == "capacity":

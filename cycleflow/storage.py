@@ -46,6 +46,14 @@ CREATE TABLE IF NOT EXISTS tests (
   plan_id TEXT NOT NULL REFERENCES plans(plan_id), tested_at TEXT NOT NULL,
   passed INTEGER NOT NULL, failed INTEGER NOT NULL, note TEXT NOT NULL,
   event_id INTEGER NOT NULL REFERENCES events(id));
+CREATE TABLE IF NOT EXISTS equipment (
+  device_id TEXT PRIMARY KEY, name TEXT NOT NULL,
+  registered_at TEXT NOT NULL, event_id INTEGER NOT NULL REFERENCES events(id));
+CREATE TABLE IF NOT EXISTS calibrations (
+  calibration_id TEXT PRIMARY KEY, device_id TEXT NOT NULL REFERENCES equipment(device_id),
+  valid_from TEXT NOT NULL, valid_to TEXT NOT NULL, recorded_at TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'active', event_id INTEGER NOT NULL REFERENCES events(id));
+CREATE INDEX IF NOT EXISTS ix_calibrations_device ON calibrations(device_id, valid_from, valid_to);
 CREATE TABLE IF NOT EXISTS releases (
   release_id TEXT PRIMARY KEY, product TEXT NOT NULL, window_start TEXT NOT NULL,
   window_end TEXT NOT NULL, created_at TEXT NOT NULL, report TEXT NOT NULL,
@@ -64,8 +72,20 @@ class Store:
         db = self.connect()
         try:
             db.executescript(SCHEMA)
+            self._migrate(db)
         finally:
             db.close()
+
+    def _migrate(self, db):
+        columns = {row[1] for row in db.execute("PRAGMA table_info(tests)")}
+        if "device_id" not in columns:
+            db.execute("ALTER TABLE tests ADD COLUMN device_id TEXT REFERENCES equipment(device_id)")
+        if "verified" not in columns:
+            db.execute("ALTER TABLE tests ADD COLUMN verified INTEGER NOT NULL DEFAULT 1")
+        if "superseded" not in columns:
+            db.execute("ALTER TABLE tests ADD COLUMN superseded INTEGER NOT NULL DEFAULT 0")
+        if "verify_reason" not in columns:
+            db.execute("ALTER TABLE tests ADD COLUMN verify_reason TEXT")
 
     def connect(self):
         db = sqlite3.connect(self.path, timeout=15, isolation_level=None)

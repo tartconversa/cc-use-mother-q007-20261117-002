@@ -45,6 +45,10 @@ class CycleAnalytics:
                     item = dict(row)
                     tests[job_id].append(item)
                     source_events.add(item["event_id"])
+                    for calibration in db.execute(
+                        "SELECT event_id FROM calibrations WHERE device_id=?",
+                        (item["device_id"],)):
+                        source_events.add(calibration["event_id"])
                 for row in db.execute(
                     "SELECT r.lot_id,r.quantity,l.part,l.supplier FROM reservations r JOIN lots l ON l.lot_id=r.lot_id WHERE r.job_id=? ORDER BY l.part,r.lot_id",
                     (job_id,)):
@@ -53,9 +57,9 @@ class CycleAnalytics:
                 "SELECT id,kind,state,error_code,occurred_at,payload FROM events WHERE state!='accepted' ORDER BY id")]
             head = db.execute("SELECT COALESCE(MAX(id),0) FROM events").fetchone()[0]
             revisions = self._revisions(jobs, steps, tests, lots)
-            job_details = [self._job_detail(job, steps[job["job_id"]], tests[job["job_id"]],
+            job_details = [self._job_detail(db, job, steps[job["job_id"]], tests[job["job_id"]],
                                             lots[job["job_id"]]) for job in jobs]
-            quality = self._quality(jobs, steps, tests, events, design_rows, start, end)
+            quality = self._quality(db, jobs, steps, tests, events, design_rows, start, end)
             summary = self._summary(jobs, tests, job_details)
             report = {"product": product, "window_start": start, "window_end": end,
                       "source_head": head, "designs": design_rows, "summary": summary,
@@ -64,7 +68,7 @@ class CycleAnalytics:
             report["fingerprint"] = fingerprint(report)
             return report
 
-    def _job_detail(self, job, steps, tests, lots):
+    def _job_detail(self, db, job, steps, tests, lots):
         stages = []
         completed = job["completed_at"]
         for step in steps:
@@ -81,18 +85,45 @@ class CycleAnalytics:
         total = duration_seconds(job["opened_at"], completed) if completed else None
         test_details = [{"test_id": test["test_id"], "plan_id": test["plan_id"],
                          "tested_at": test["tested_at"], "passed": test["passed"],
-                         "failed": test["failed"], "source_event_id": test["event_id"]} for test in tests]
+                         "failed": test["failed"], "device_id": test["device_id"],
+                         "verified": bool(test["verified"]), "verify_reason": test["verify_reason"],
+                         "superseded": bool(test["superseded"]),
+                         "source_event_id": test["event_id"]} for test in tests]
+        effective = [test for test in tests if not test["superseded"]]
+        quality_state = "verified" if effective and all(test["verified"] for test in effective) else (
+            "recheck" if any(not test["verified"] for test in effective) else "untested")
+        rework_impacted = False
+        if job["parent_job"]:
+            # A rework job is impacted while the conclusion it was opened on
+            # lacks a verified effective test (parent parked in recheck). Once
+            # a verified replacement test restores the parent, the impact
+            # clears and the view is consistent again.
+            rework_impacted = self._parent_impact(db, job)
         return {"job_id": job["job_id"], "design_id": job["design_id"],
                 "revision": job["revision"], "quantity": job["quantity"],
                 "status": job["status"], "opened_at": job["opened_at"],
                 "completed_at": completed, "parent_job": job["parent_job"],
                 "failure_reason": job["failure_reason"], "stages": stages,
                 "tests": test_details, "lots": lots, "wait_seconds": wait,
-                "cycle_seconds": total}
+                "cycle_seconds": total, "quality_state": quality_state,
+                "rework_impacted": rework_impacted}
+
+    def _parent_impact(self, db, job):
+        parent = db.execute("SELECT status FROM jobs WHERE job_id=?",
+                            (job["parent_job"],)).fetchone()
+        if parent is None:
+            return False
+        if parent["status"] == "recheck":
+            return True
+        unverified = db.execute(
+            "SELECT COUNT(*) FROM tests WHERE job_id=? AND superseded=0 AND verified=0",
+            (job["parent_job"],)).fetchone()[0]
+        return bool(unverified)
 
     def _revisions(self, jobs, steps, tests, lots):
         groups = defaultdict(lambda: {"jobs": 0, "units": 0, "tested": 0, "passed": 0,
                                       "failed": 0, "completed": 0, "scrapped": 0,
+                                      "unverified": 0, "superseded": 0, "recheck": 0,
                                       "cycle_seconds": [], "stage_seconds": defaultdict(list),
                                       "suppliers": defaultdict(int)})
         for job in jobs:
@@ -101,6 +132,7 @@ class CycleAnalytics:
             group["units"] += job["quantity"]
             group["completed"] += job["status"] == "completed"
             group["scrapped"] += job["status"] == "scrapped"
+            group["recheck"] += job["status"] == "recheck"
             if job["completed_at"]:
                 group["cycle_seconds"].append(duration_seconds(job["opened_at"], job["completed_at"]))
             for step in steps[job["job_id"]]:
@@ -108,7 +140,16 @@ class CycleAnalytics:
                     group["stage_seconds"][step["stage"]].append(
                         duration_seconds(step["started_at"], step["completed_at"]))
             for test in tests[job["job_id"]]:
-                group["tested"] += test["passed"] + test["failed"]
+                units = test["passed"] + test["failed"]
+                if test["superseded"]:
+                    group["superseded"] += units
+                    continue
+                if not test["verified"]:
+                    # Held out of the yield: neither pass nor failure until the
+                    # calibration question is resolved.
+                    group["unverified"] += units
+                    continue
+                group["tested"] += units
                 group["passed"] += test["passed"]
                 group["failed"] += test["failed"]
             for lot in lots[job["job_id"]]:
@@ -119,14 +160,18 @@ class CycleAnalytics:
             durations = group["cycle_seconds"]
             result.append({"revision": revision, "jobs": group["jobs"], "units": group["units"],
                            "tested_units": group["tested"], "passed_units": group["passed"],
-                           "failed_units": group["failed"], "pass_rate": ratio(group["passed"], group["tested"]),
+                           "failed_units": group["failed"],
+                           "unverified_units": group["unverified"],
+                           "superseded_units": group["superseded"],
+                           "recheck_jobs": group["recheck"],
+                           "pass_rate": ratio(group["passed"], group["tested"]),
                            "completed_jobs": group["completed"], "scrapped_jobs": group["scrapped"],
                            "mean_cycle_seconds": sum(durations) // len(durations) if durations else None,
                            "stage_mean_seconds": {name: sum(values) // len(values) for name, values in sorted(group["stage_seconds"].items())},
                            "supplier_units": dict(sorted(group["suppliers"].items()))})
         return result
 
-    def _quality(self, jobs, steps, tests, events, designs, start, end):
+    def _quality(self, db, jobs, steps, tests, events, designs, start, end):
         issues = []
         for job in jobs:
             job_id = job["job_id"]
@@ -138,9 +183,24 @@ class CycleAnalytics:
                 issues.append({"code": "unexplained_completion", "subject": job_id})
             if job["status"] == "failed" and not job["failure_reason"]:
                 issues.append({"code": "unexplained_failure", "subject": job_id})
+            if job["status"] == "recheck":
+                effective = [test for test in tests[job_id] if not test["superseded"]]
+                reason = effective[-1]["verify_reason"] if effective else job["failure_reason"]
+                issues.append({"code": "unverified_test", "subject": job_id, "reason": reason})
             for step in steps[job_id]:
                 if step["completed_at"] is None:
                     issues.append({"code": "open_stage", "subject": job_id + "/" + step["stage"]})
+            if job["parent_job"]:
+                # Query facts directly: the parent may fall outside the report
+                # window while the rework child sits inside it.
+                parent = db.execute("SELECT status FROM jobs WHERE job_id=?",
+                                    (job["parent_job"],)).fetchone()
+                premise = db.execute(
+                    "SELECT COUNT(*) FROM tests WHERE job_id=? AND superseded=0 AND verified=0",
+                    (job["parent_job"],)).fetchone()[0]
+                if (parent is not None and parent["status"] == "recheck") or premise:
+                    issues.append({"code": "rework_premise_unverified", "subject": job_id,
+                                   "reason": job["parent_job"]})
         for event in events:
             if start <= event["occurred_at"] < end:
                 issues.append({"code": "unresolved_event", "subject": str(event["id"]),
@@ -150,15 +210,24 @@ class CycleAnalytics:
         return {"publishable": not issues, "issue_count": len(issues), "issues": issues}
 
     def _summary(self, jobs, tests, details):
-        passed = failed = 0
+        passed = failed = unverified = superseded = 0
         for items in tests.values():
             for test in items:
-                passed += test["passed"]
-                failed += test["failed"]
+                units = test["passed"] + test["failed"]
+                if test["superseded"]:
+                    superseded += units
+                elif not test["verified"]:
+                    unverified += units
+                else:
+                    passed += test["passed"]
+                    failed += test["failed"]
         completed = [item["cycle_seconds"] for item in details if item["cycle_seconds"] is not None]
         waiting = [item["wait_seconds"] for item in details if item["wait_seconds"] is not None]
         return {"job_count": len(jobs), "unit_count": sum(job["quantity"] for job in jobs),
                 "tested_units": passed + failed, "passed_units": passed, "failed_units": failed,
+                "unverified_units": unverified, "superseded_units": superseded,
+                "recheck_jobs": sum(job["status"] == "recheck" for job in jobs),
+                "rework_impacted_jobs": sum(item["rework_impacted"] for item in details),
                 "pass_rate": ratio(passed, passed + failed),
                 "mean_cycle_seconds": sum(completed) // len(completed) if completed else None,
                 "mean_wait_seconds": sum(waiting) // len(waiting) if waiting else None,
@@ -168,6 +237,7 @@ class CycleAnalytics:
         first = self.report(product, first_start, first_end)
         second = self.report(product, second_start, second_end)
         metrics = ("job_count", "unit_count", "tested_units", "passed_units", "failed_units",
+                   "unverified_units", "superseded_units", "recheck_jobs",
                    "mean_cycle_seconds", "mean_wait_seconds", "rework_jobs")
         delta = {name: second["summary"][name] - first["summary"][name]
                  if second["summary"][name] is not None and first["summary"][name] is not None else None

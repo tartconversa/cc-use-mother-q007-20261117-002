@@ -30,6 +30,19 @@ class ServiceCase(unittest.TestCase):
         return self.ingest(4, "plan.create", 3, {"plan_id": "P1", "product": "robot-arm",
                                                   "revision": 1, "minimum_pass_rate": "0.75"})
 
+    def seed_device(self, device_id="D1"):
+        self.ingest(13, "equipment.register", 2, {"device_id": device_id, "name": "bench-tester"})
+        self.ingest(14, "calibration.record", 3,
+                    {"calibration_id": "C-" + device_id, "device_id": device_id,
+                     "valid_from": "2026-01-01T00:00:00Z",
+                     "valid_to": "2026-12-31T23:59:59Z"})
+
+    def build_test_payload(self, test_id, passed, failed, *, job_id="J1", plan_id="P1", device_id="D1", **extra):
+        payload = {"test_id": test_id, "job_id": job_id, "plan_id": plan_id,
+                   "device_id": device_id, "passed": passed, "failed": failed}
+        payload.update(extra)
+        return payload
+
     def seed_job(self, job_id="J1", quantity=4, number=5, minute=4, parent=None):
         payload = {"job_id": job_id, "design_id": "R1", "quantity": quantity}
         if parent:

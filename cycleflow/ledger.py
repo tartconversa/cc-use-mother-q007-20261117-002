@@ -1,6 +1,7 @@
 import json
 import sqlite3
 
+from .calibration import CalibrationRules
 from .contracts import DomainError, MissingDependency, fingerprint, keys, required_text, stable_json, timestamp, utc_now
 from .design import DesignRules
 from .execution import ExecutionRules
@@ -12,6 +13,8 @@ KINDS = {
     "design.release", "design.retire", "lot.receive", "lot.quarantine",
     "job.open", "job.stage_start", "job.stage_finish", "job.scrap",
     "plan.create", "test.record",
+    "equipment.register", "calibration.record", "calibration.invalidate",
+    "calibration.reinstate",
 }
 
 
@@ -66,6 +69,8 @@ class EventLedger:
                 detail = InventoryRules(db).dispatch(kind, payload, row["occurred_at"])
             elif kind.startswith("job."):
                 detail = ExecutionRules(db).dispatch(kind, payload, row["occurred_at"], event_id)
+            elif kind.startswith("equipment.") or kind.startswith("calibration."):
+                detail = CalibrationRules(db).dispatch(kind, payload, row["occurred_at"], event_id)
             else:
                 detail = MeasurementRules(db).dispatch(kind, payload, row["occurred_at"], event_id)
             db.execute("RELEASE SAVEPOINT project_event")
